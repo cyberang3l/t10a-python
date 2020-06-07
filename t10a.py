@@ -741,13 +741,17 @@ def pretty_measurement_print(resp):
     print("Response for command:", resp.command)
     print("Hold value:", resp.hold)
     print("Range value:", resp.range)
+    print("Battery level:", resp.battery_level)
     print("Data:")
     print("  Illuminance:", resp.data.illuminance)
     print("  Delta:", resp.data.delta)
     print("  Percent:", resp.data.percent)
+    if resp.battery_level == T10A.BATTERY_LEVEL.LOW:
+        eprint("WARNING: Battery level is low. Please change the battery or"
+               " plug the power cable.")
     if is_error(resp.err):
         _, err_msg = resp.err
-        print("Error: ", err_msg)
+        eprint("Error: ", err_msg)
     print()
 
 
