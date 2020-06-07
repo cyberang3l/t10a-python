@@ -31,11 +31,11 @@ class T10A(object):
         LONG_BYTE_COUNT = 32
 
     class CMD(IntEnum):
-        READ_MEASUREMENT_DATA = b'10'
-        READ_INTEGRATED_DATA = b'11'
-        CLEAR_INTEGRATED_DATA = b'28'
-        SET_PC_CONNECTION_MODE = b'54'
-        SET_HOLD_STATUS = b'55'
+        READ_MEASUREMENT_DATA = 10
+        READ_INTEGRATED_DATA = 11
+        CLEAR_INTEGRATED_DATA = 28
+        SET_PC_CONNECTION_MODE = 54
+        SET_HOLD_STATUS = 55
 
     def _cmd_resp_length(self, cmd):
         if cmd == self.CMD.READ_MEASUREMENT_DATA:
@@ -127,6 +127,11 @@ class T10A(object):
             raise ValueError(
                 "receptor_head must be a numeric ID of the"
                 " receptor head connected to T10A")
+
+        if value < 0 or value > 29:
+            raise ValueError(
+                "receptor_head must be a numeric ID between 0 and 29")
+
         self._rcp_head = value
 
     @receptor_head.deleter
