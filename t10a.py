@@ -10,9 +10,15 @@
 
 # BCC = Block Check Character - page 25
 
+import sys
+import time
 from enum import IntEnum
 from typing import NamedTuple
 import serial
+
+
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
 
 
 def insert_to_bytearray(barray, bytes_to_insert, offset):
@@ -105,7 +111,8 @@ class T10A(object):
 
     SPACE = bytes([0x20])
 
-    class Response(NamedTuple):  # pylint: disable=too-few-public-methods
+    # pylint: disable=too-few-public-methods
+    class GenericResponse(NamedTuple):
         """
         https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
         Section 3: Protocol
@@ -302,7 +309,11 @@ class T10A(object):
                 "Expecting response for {} command. Received for {}".format(
                     int(for_cmd), int(cmd_response)))
 
-        return self.Response(receptor_head, cmd_response, status, data)
+        return self.GenericResponse(
+            receptor_head=receptor_head,
+            command=self.CMD(int(cmd_response.decode('ascii'))),
+            status=status,
+            data=data)
 
     def _device_write(self, command, param):
         """
@@ -354,6 +365,138 @@ class T10A(object):
         resp = self._parse_response(raw_response, command)
         return resp
 
+    class HOLD(IntEnum):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 5.1: Reading the Measured Values
+        """
+        RUN = 0
+        HOLD = 1
+
+    def _parse_hold_from_status(self, status):
+        HOLD_STATUS_BYTE_SHIFT = 0
+        hold = status.decode('ascii')[HOLD_STATUS_BYTE_SHIFT]
+        # Try to parse HOLD setting from status
+        # HOLD can be returned with many different values
+
+        class HOLD_STATUS(IntEnum):
+            HOLD_1 = 1
+            RUN_2 = 2
+            HOLD_3 = 3
+            RUN_4 = 4
+            HOLD_5 = 5
+            RUN_6 = 6
+            HOLD_7 = 7
+            RUN_8 = 8
+
+        try:
+            h = HOLD_STATUS(int(hold))
+            if (h == HOLD_STATUS.HOLD_1 or
+                    h == HOLD_STATUS.HOLD_3 or
+                    h == HOLD_STATUS.HOLD_5 or
+                    h == HOLD_STATUS.HOLD_7):
+                return self.HOLD.HOLD
+            return self.HOLD.RUN
+        except ValueError as e:
+            eprint("Could not parse HOLD status in response\n")
+            raise e
+
+    class ERROR(IntEnum):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 5.1: Reading the Measured Values
+        """
+        ERR_1 = 1
+        ERR_2 = 2
+        ERR_3 = 3
+        ERR_4 = 5
+        NORMAL_OPERATION_1 = 0x20  # (space character)
+        NORMAL_OPERATION_2 = 7     # (space character)
+
+    ERROR_DESC = {
+        ERROR.ERR_1: ("Receptor head power is switched off. Switch off the"
+                      " T-10A and then switch it back on"),
+        ERROR.ERR_2: ("EEPROM error 1. Switch off the T-10A and the switch"
+                      " it back on"),
+        ERROR.ERR_3: ("EEPROM error 2. Switch off the T-10A and the switch"
+                      " it back on"),
+        ERROR.ERR_4: ("Measurement value over error. Measurement exceeds"
+                      " the T-10A measurement range."),
+        ERROR.NORMAL_OPERATION_1: "Normal Operation",
+        ERROR.NORMAL_OPERATION_2: "Normal Operation",
+    }
+
+    def _parse_err_from_status(self, status):
+        ERROR_STATUS_BYTE_SHIFT = 1
+        err = status.decode('ascii')[ERROR_STATUS_BYTE_SHIFT]
+        # Try to parse the error from status
+        # Note that one of the possible return values for
+        # error is space (' '). This is a special value that
+        # we need to convert back to a hex value
+        if err == ' ':
+            err = err.encode('ascii')[0]
+
+        try:
+            err_enum = self.ERROR(int(err))
+            err = self.ERROR_DESC[err_enum]
+            return tuple((err_enum, err))
+        except ValueError as e:
+            eprint("Could not parse ERROR in response\n")
+            raise e
+
+    class RANGE(IntEnum):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 5.1: Reading the Measured Values
+        """
+        AUTO = 0
+        RANGE_1 = 1
+        RANGE_2 = 2
+        RANGE_3 = 3
+        RANGE_4 = 4
+        RANGE_5 = 5
+
+    def _parse_range_from_status(self, status):
+        RANGE_STATUS_BYTE_SHIFT = 2
+        rng = status.decode('ascii')[RANGE_STATUS_BYTE_SHIFT]
+        # Try to parse the range from status
+        try:
+            return self.RANGE(int(rng))
+        except ValueError as e:
+            eprint("Could not parse RANGE in response\n")
+            raise e
+
+    class BATTERY_LEVEL(IntEnum):
+        NORMAL = 0
+        LOW = 1
+
+    def _parse_battery_level_from_status(self, status):
+        BATTERY_LEVEL_STATUS_BYTE_SHIFT = 3
+        battery_level = status.decode('ascii')[BATTERY_LEVEL_STATUS_BYTE_SHIFT]
+
+        class BATTERY_LEVEL_STATUS(IntEnum):
+            NORMAL_0 = 0
+            LOW_1 = 1
+            NORMAL_2 = 2
+            LOW_3 = 3
+        try:
+            b = BATTERY_LEVEL_STATUS(int(battery_level))
+            if (b == BATTERY_LEVEL_STATUS.NORMAL_0 or
+                    b == BATTERY_LEVEL_STATUS.NORMAL_1):
+                return self.BATTERY_LEVEL.NORMAL
+            return self.BATTERY_LEVEL.LOW
+        except ValueError as e:
+            eprint("Could not parse BATTERY_LEVEL in response\n")
+            raise e
+
+    class CCF(IntEnum):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 5.1: Reading the Measured Values
+        """
+        DISABLED = 2
+        ENABLED = 3
+
     def connect(self):
         """
         https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
@@ -370,35 +513,20 @@ class T10A(object):
         resp = self._device_write(cmd, params)
         return resp
 
-    class RMD_HOLD(IntEnum):
+    class RMD_Response(NamedTuple):  # pylint: disable=too-few-public-methods
         """
         https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
         Section 5.1: Reading the Measured Values
         """
-        RUN = 0
-        HOLD = 1
+        receptor_head: bytes
+        command: IntEnum
+        hold: IntEnum
+        err: tuple
+        range: IntEnum
+        battery_level: IntEnum
+        data: list
 
-    class RMD_CCF(IntEnum):
-        """
-        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
-        Section 5.1: Reading the Measured Values
-        """
-        DISABLED = 2
-        ENABLED = 3
-
-    class RMD_RANGE(IntEnum):
-        """
-        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
-        Section 5.1: Reading the Measured Values
-        """
-        AUTO = 0
-        RANGE_1 = 1
-        RANGE_2 = 2
-        RANGE_3 = 3
-        RANGE_4 = 4
-        RANGE_5 = 5
-
-    def read_measurement_data(self, hold, ccf, rng):
+    def read_measurement_data(self, hold, ccf, rng, silent=False):
         """
         https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
         Section 1: Foreword
@@ -413,33 +541,75 @@ class T10A(object):
         this case, a certain wait time must be provided between data request
         commands.
         """
-        if not isinstance(hold, self.RMD_HOLD):
-            raise ValueError("Unknown HOLD value " + hold)
-        if not isinstance(ccf, self.RMD_CCF):
-            raise ValueError("Unknown CCF value " + ccf)
-        if not isinstance(rng, self.RMD_RANGE):
-            raise ValueError("Unknown RANGE value " + rng)
+        if not isinstance(hold, self.HOLD):
+            raise ValueError(
+                "Unknown HOLD value {}. Expected {} value type".format(
+                    hold, self.HOLD))
+        if not isinstance(ccf, self.CCF):
+            raise ValueError(
+                "Unknown CCF value {}. Expected {} value type".format(
+                    ccf, self.CCF))
+        if not isinstance(rng, self.RANGE):
+            raise ValueError(
+                "Unknown RANGE value {}. Expected {} value type".format(
+                    rng, self.RANGE))
+
+        def get_measurement_with_retries(
+                cmd, params, requested_range, max_retries):
+            resp = -1
+            received_range = -1
+            # If the received range is different than the range we requested
+            # we need to get a new measurement. It takes up to half second
+            # for a new measurement to be taken when changing range.
+            count = 0
+            while received_range != requested_range and count < max_retries:
+                if count == max_retries:
+                    raise BaseException(
+                        "Reached max retries {}. Aborting.".format(
+                            max_retries))
+
+                if count != 0 and not silent:
+                    eprint("Response range is different than the requested"
+                           " one; range hasn't been updated yet.\n"
+                           "Repeating command {}.".format(cmd))
+                    time.sleep(0.6)
+                resp = self._device_write(cmd, params)
+                received_range = self._parse_range_from_status(resp.status)
+                count += 1
+            return resp, received_range
 
         cmd = self.CMD.READ_MEASUREMENT_DATA
         params = (self._get_bytes_from_int_enum(hold) +
                   self._get_bytes_from_int_enum(ccf) +
                   self._get_bytes_from_int_enum(rng) +
                   b'0')
-        resp = self._device_write(cmd, params)
 
-        
+        resp, received_range = get_measurement_with_retries(
+            cmd, params, rng, 10)
 
-        return resp
+        rmd_response = self.RMD_Response(
+            receptor_head=resp.receptor_head,
+            command=resp.command,
+            hold=self._parse_hold_from_status(resp.status),
+            err=self._parse_err_from_status(resp.status),
+            range=received_range,
+            battery_level=self._parse_battery_level_from_status(resp.status),
+            data=resp.data[:])
+        # illuminance_data = resp.data[0]
+        # delta_value = resp.data[1]
+        # percent_value = resp.data[2]
+
+        return rmd_response
 
 
 def main():
     with T10A(port='/dev/ttyUSB0') as t10a:
         t10a.connect()
         resp = t10a.read_measurement_data(
-            T10A.RMD_HOLD.RUN,
-            T10A.RMD_CCF.DISABLED,
-            T10A.RMD_RANGE.RANGE_5)
-        print(resp.data[0])
+            T10A.HOLD.RUN,
+            T10A.CCF.DISABLED,
+            T10A.RANGE.RANGE_5)
+        print(resp)
 
 
 if __name__ == "__main__":
