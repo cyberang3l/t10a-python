@@ -78,15 +78,18 @@ class T10A(object):
     CMD_BYTE_COUNT = 2
     CMD_OFFSET = RECEPTOR_HEAD_OFFSET + RECEPTOR_HEAD_BYTE_COUNT
 
+    # This is referred to as DATA 4 in the specification.
+    # However, in this block we store the parameters of a request
+    # or the status the response.
     STATUS_PARAM_OFFSET = CMD_OFFSET + CMD_BYTE_COUNT
     STATUS_PARAM_BYTE_COUNT = 4
 
     DATA_OFFSET = STATUS_PARAM_OFFSET + STATUS_PARAM_BYTE_COUNT
     DATA_BLOCK_BYTE_COUNT = 6
     DATA_BYTE_COUNT = 3 * DATA_BLOCK_BYTE_COUNT  # 3x6byte blocks
-    DATA_BLOCK_1_OFFSET = DATA_OFFSET
-    DATA_BLOCK_2_OFFSET = DATA_BLOCK_1_OFFSET + DATA_BLOCK_BYTE_COUNT
-    DATA_BLOCK_3_OFFSET = DATA_BLOCK_2_OFFSET + DATA_BLOCK_BYTE_COUNT
+    DATA_BLOCK_3_OFFSET = DATA_OFFSET
+    DATA_BLOCK_2_OFFSET = DATA_BLOCK_3_OFFSET + DATA_BLOCK_BYTE_COUNT
+    DATA_BLOCK_1_OFFSET = DATA_BLOCK_2_OFFSET + DATA_BLOCK_BYTE_COUNT
 
     ETX = bytes([0x03])
     ETX_SHORT_OFFSET = STATUS_PARAM_OFFSET + STATUS_PARAM_BYTE_COUNT
@@ -264,14 +267,14 @@ class T10A(object):
             # bytes 1-27
             bcc_offset = self.BCC_LONG_OFFSET
             data_block_1 = resp[
-                self.DATA_BLOCK_1_OFFSET:(
-                    self.DATA_BLOCK_1_OFFSET+self.DATA_BLOCK_BYTE_COUNT)]
+                self.DATA_BLOCK_3_OFFSET:(
+                    self.DATA_BLOCK_3_OFFSET+self.DATA_BLOCK_BYTE_COUNT)]
             data_block_2 = resp[
                 self.DATA_BLOCK_2_OFFSET:(
                     self.DATA_BLOCK_2_OFFSET+self.DATA_BLOCK_BYTE_COUNT)]
             data_block_3 = resp[
-                self.DATA_BLOCK_3_OFFSET:(
-                    self.DATA_BLOCK_3_OFFSET+self.DATA_BLOCK_BYTE_COUNT)]
+                self.DATA_BLOCK_1_OFFSET:(
+                    self.DATA_BLOCK_1_OFFSET+self.DATA_BLOCK_BYTE_COUNT)]
             data = [data_block_1, data_block_2, data_block_3]
         else:
             raise ValueError("Unknown response format " + resp_fmt)
@@ -423,6 +426,9 @@ class T10A(object):
                   self._get_bytes_from_int_enum(rng) +
                   b'0')
         resp = self._device_write(cmd, params)
+
+        
+
         return resp
 
 
