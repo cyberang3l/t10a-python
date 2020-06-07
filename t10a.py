@@ -125,6 +125,63 @@ class T10A(object):
         status: bytes
         data: list
 
+    class HOLD(IntEnum):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 5.1: Reading the Measured Values
+        """
+        RUN = 0
+        HOLD = 1
+
+    class CCF(IntEnum):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 5.1: Reading the Measured Values
+        """
+        DISABLED = 2
+        ENABLED = 3
+
+    class RANGE(IntEnum):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 5.1: Reading the Measured Values
+        """
+        AUTO = 0
+        RANGE_1 = 1
+        RANGE_2 = 2
+        RANGE_3 = 3
+        RANGE_4 = 4
+        RANGE_5 = 5
+
+    class ERROR(IntEnum):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 5.1: Reading the Measured Values
+        """
+        ERR_1 = 1
+        ERR_2 = 2
+        ERR_3 = 3
+        ERR_4 = 5
+        NORMAL_OPERATION_1 = 0x20  # (space character)
+        NORMAL_OPERATION_2 = 7     # (space character)
+
+    ERROR_DESC = {
+        ERROR.ERR_1: ("Receptor head power is switched off. Switch off the"
+                      " T-10A and then switch it back on"),
+        ERROR.ERR_2: ("EEPROM error 1. Switch off the T-10A and the switch"
+                      " it back on"),
+        ERROR.ERR_3: ("EEPROM error 2. Switch off the T-10A and the switch"
+                      " it back on"),
+        ERROR.ERR_4: ("Measurement value over error. Measurement exceeds"
+                      " the T-10A measurement range."),
+        ERROR.NORMAL_OPERATION_1: "Normal Operation",
+        ERROR.NORMAL_OPERATION_2: "Normal Operation",
+    }
+
+    class BATTERY_LEVEL(IntEnum):
+        NORMAL = 0
+        LOW = 1
+
     def __init__(self, port):
         """
         https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
@@ -365,14 +422,6 @@ class T10A(object):
         resp = self._parse_response(raw_response, command)
         return resp
 
-    class HOLD(IntEnum):
-        """
-        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
-        Section 5.1: Reading the Measured Values
-        """
-        RUN = 0
-        HOLD = 1
-
     def _parse_hold_from_status(self, status):
         HOLD_STATUS_BYTE_SHIFT = 0
         hold = status.decode('ascii')[HOLD_STATUS_BYTE_SHIFT]
@@ -401,31 +450,6 @@ class T10A(object):
             eprint("Could not parse HOLD status in response\n")
             raise e
 
-    class ERROR(IntEnum):
-        """
-        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
-        Section 5.1: Reading the Measured Values
-        """
-        ERR_1 = 1
-        ERR_2 = 2
-        ERR_3 = 3
-        ERR_4 = 5
-        NORMAL_OPERATION_1 = 0x20  # (space character)
-        NORMAL_OPERATION_2 = 7     # (space character)
-
-    ERROR_DESC = {
-        ERROR.ERR_1: ("Receptor head power is switched off. Switch off the"
-                      " T-10A and then switch it back on"),
-        ERROR.ERR_2: ("EEPROM error 1. Switch off the T-10A and the switch"
-                      " it back on"),
-        ERROR.ERR_3: ("EEPROM error 2. Switch off the T-10A and the switch"
-                      " it back on"),
-        ERROR.ERR_4: ("Measurement value over error. Measurement exceeds"
-                      " the T-10A measurement range."),
-        ERROR.NORMAL_OPERATION_1: "Normal Operation",
-        ERROR.NORMAL_OPERATION_2: "Normal Operation",
-    }
-
     def _parse_err_from_status(self, status):
         ERROR_STATUS_BYTE_SHIFT = 1
         err = status.decode('ascii')[ERROR_STATUS_BYTE_SHIFT]
@@ -444,18 +468,6 @@ class T10A(object):
             eprint("Could not parse ERROR in response\n")
             raise e
 
-    class RANGE(IntEnum):
-        """
-        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
-        Section 5.1: Reading the Measured Values
-        """
-        AUTO = 0
-        RANGE_1 = 1
-        RANGE_2 = 2
-        RANGE_3 = 3
-        RANGE_4 = 4
-        RANGE_5 = 5
-
     def _parse_range_from_status(self, status):
         RANGE_STATUS_BYTE_SHIFT = 2
         rng = status.decode('ascii')[RANGE_STATUS_BYTE_SHIFT]
@@ -465,10 +477,6 @@ class T10A(object):
         except ValueError as e:
             eprint("Could not parse RANGE in response\n")
             raise e
-
-    class BATTERY_LEVEL(IntEnum):
-        NORMAL = 0
-        LOW = 1
 
     def _parse_battery_level_from_status(self, status):
         BATTERY_LEVEL_STATUS_BYTE_SHIFT = 3
@@ -488,14 +496,6 @@ class T10A(object):
         except ValueError as e:
             eprint("Could not parse BATTERY_LEVEL in response\n")
             raise e
-
-    class CCF(IntEnum):
-        """
-        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
-        Section 5.1: Reading the Measured Values
-        """
-        DISABLED = 2
-        ENABLED = 3
 
     def connect(self):
         """
