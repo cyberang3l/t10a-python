@@ -27,10 +27,14 @@ def insert_to_bytearray(barray, bytes_to_insert, offset):
 class T10A(object):
 
     class COMM_FMT_RESP(IntEnum):
+        # https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        # Section 3.1 and 3.2 Short and Long Information Format
         SHORT_BYTE_COUNT = 14
         LONG_BYTE_COUNT = 32
 
     class CMD(IntEnum):
+        # https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        # Section 4: Command List
         READ_MEASUREMENT_DATA = 10
         READ_INTEGRATED_DATA = 11
         CLEAR_INTEGRATED_DATA = 28
@@ -52,8 +56,18 @@ class T10A(object):
 
     @staticmethod
     def _get_bytes_from_int_enum(en):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 3.1 Short Information Format
+
+        All the parameters except for STX (02H, ETX (03H), CR (0DH) and
+        LF (0AH) must be specified by ASCII code.
+        """
         return str(int(en)).encode('ascii')
 
+    # https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+    # Offsets for short/long format responses and values of STX, ETX and DELIM
+    # are explained in Section 3: Protocol
     STX = bytes([0x02])
     STX_BYTE_COUNT = 1
     STX_OFFSET = 0
@@ -89,12 +103,23 @@ class T10A(object):
     SPACE = bytes([0x20])
 
     class Response(NamedTuple):  # pylint: disable=too-few-public-methods
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 3: Protocol
+
+        The short response will only container a recepter_head, command and
+        status while the long response will contain also the data.
+        """
         receptor_head: bytes
         command: bytes
         status: bytes
         data: list
 
     def __init__(self, port):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 2: Communication Specifications
+        """
         self._rcp_head = 0
         self._ser = serial.Serial()
         self._ser.port = port
@@ -123,12 +148,25 @@ class T10A(object):
 
     @receptor_head.setter
     def receptor_head(self, value):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 1: Foreword
+
+        If multiple receptor heads are connected to T-10, care must be taken
+        when setting the receptor no. Setting ‘99’ will allowyou to send a
+        command to all the connected receptor heads at once. (However, only
+        command 55, which does not requirea reply from the receptor heads,
+        can be used.)
+
+        Also in Section 3.1: Short Information Format
+        Receptor head selection (0 to 29; and 99 for all receptor heads)
+        """
         if not isinstance(value, int):
             raise ValueError(
                 "receptor_head must be a numeric ID of the"
                 " receptor head connected to T10A")
 
-        if value < 0 or value > 29:
+        if value != 99 or value < 0 or value > 29:
             raise ValueError(
                 "receptor_head must be a numeric ID between 0 and 29")
 
@@ -158,6 +196,10 @@ class T10A(object):
 
     @staticmethod
     def bcc_calc(barray):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 3.3
+        """
         if not barray:
             raise ValueError("the bytearray cannot be empty")
         elif len(barray) == 1:
@@ -168,18 +210,25 @@ class T10A(object):
         return format(bcc, '02x').upper().encode('ascii')
 
     def _parse_response(self, resp, for_cmd):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 3: Protocol
+        """
         resp_fmt = self._cmd_resp_length(for_cmd)
         calculated_bcc = -1
         bcc_offset = -1
         receptor_head = resp[
             self.RECEPTOR_HEAD_OFFSET:(self.RECEPTOR_HEAD_OFFSET +
                                        self.RECEPTOR_HEAD_BYTE_COUNT)]
-        command = for_cmd
         status = resp[
             self.STATUS_PARAM_OFFSET:(self.STATUS_PARAM_OFFSET +
                                       self.STATUS_PARAM_BYTE_COUNT)]
         data = []
+
         if resp_fmt == self.COMM_FMT_RESP.SHORT_BYTE_COUNT:
+            # https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+            # Section 3.1 Short Information Format
+            #
             # STX:            1 byte
             # RCPT_HEAD_NUM:  2 bytes
             # CMD NAME:       2 bytes
@@ -195,6 +244,9 @@ class T10A(object):
             # bytes 1-9
             bcc_offset = self.BCC_SHORT_OFFSET
         elif resp_fmt == self.COMM_FMT_RESP.LONG_BYTE_COUNT:
+            # https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+            # Section 3.2 Long Information Format
+            #
             # Same with short format with the addition of data bytes
             # STX:                1 byte
             # RCPT_HEAD_NUM:      2 bytes
@@ -227,14 +279,34 @@ class T10A(object):
         calculated_bcc = self.bcc_calc(
             resp[self.RECEPTOR_HEAD_OFFSET:bcc_offset])
         received_bcc = resp[bcc_offset:bcc_offset+self.BCC_BYTE_COUNT]
+        # https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        # Section 1: Foreword
+        #
+        # Information to be used for communication with T-10 contains a sum
+        # check code (BCC) that checks the contents of theinformation. By
+        # performing a sum check, reliability of the information can be
+        # maintained.
         if calculated_bcc != received_bcc:
             raise ValueError(
                 "BCC mismatch: received {} but calculated {}".format(
                     received_bcc, calculated_bcc))
 
-        return self.Response(receptor_head, command, status, data)
+        # Validate that we received a response for the expected command
+        cmd_response = resp[self.CMD_OFFSET:(self.CMD_OFFSET +
+                                             self.CMD_BYTE_COUNT)]
+        if int(cmd_response) != int(for_cmd):
+            raise ValueError(
+                "Expecting response for {} command. Received for {}".format(
+                    int(for_cmd), int(cmd_response)))
+
+        return self.Response(receptor_head, cmd_response, status, data)
 
     def _device_write(self, command, param):
+        """
+        The _device_write function sends a command and waits until a response
+        is received. The response is parsed and its BCC is validated. If
+        something goes wrong with the validation, an exception will be raised.
+        """
         # All the writes use the short format. The response
         # might vary depending on the command.
         #
@@ -262,6 +334,14 @@ class T10A(object):
         insert_to_bytearray(cmd, param, self.STATUS_PARAM_OFFSET)
         insert_to_bytearray(cmd, self.ETX, self.ETX_SHORT_OFFSET)
         # All the commands are in short format
+        #
+        # https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        # Section 1: Foreword
+        #
+        # Information to be used for communication with T-10 contains a sum
+        # check code (BCC) that checks the contents of theinformation. By
+        # performing a sum check, reliability of the information can be
+        # maintained.
         bcc = self.bcc_calc(
             cmd[self.RECEPTOR_HEAD_OFFSET:self.BCC_SHORT_OFFSET])
         insert_to_bytearray(cmd, bcc, self.BCC_SHORT_OFFSET)
@@ -272,20 +352,42 @@ class T10A(object):
         return resp
 
     def connect(self):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 1: Foreword
+
+        Prior to start of data communication with T-10, send command 54 to
+        switch the connection mode to PC connection mode.Unless PC connection
+        mode is established, communication with T-10 will be impossible. When
+        carrying out an operation,the corresponding command must also be sent
+        in accordance with the specified procedure.
+        """
         cmd = self.CMD.SET_PC_CONNECTION_MODE
         params = b'1' + 3*self.SPACE
         resp = self._device_write(cmd, params)
         return resp
 
     class RMD_HOLD(IntEnum):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 5.1: Reading the Measured Values
+        """
         RUN = 0
         HOLD = 1
 
     class RMD_CCF(IntEnum):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 5.1: Reading the Measured Values
+        """
         DISABLED = 2
         ENABLED = 3
 
     class RMD_RANGE(IntEnum):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 5.1: Reading the Measured Values
+        """
         AUTO = 0
         RANGE_1 = 1
         RANGE_2 = 2
@@ -294,6 +396,20 @@ class T10A(object):
         RANGE_5 = 5
 
     def read_measurement_data(self, hold, ccf, rng):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 1: Foreword
+
+        The commands explained in this manual are provided to request data, not
+        measurements
+        ...
+        ...
+        A wait time is required for range switching.Since the saved data will
+        not be updated while the T-10 is switching the measuring range, the
+        same data may be outputagain when a data request command is sent. In
+        this case, a certain wait time must be provided between data request
+        commands.
+        """
         if not isinstance(hold, self.RMD_HOLD):
             raise ValueError("Unknown HOLD value " + hold)
         if not isinstance(ccf, self.RMD_CCF):
