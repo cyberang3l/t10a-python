@@ -125,6 +125,33 @@ class T10A(object):
         status: bytes
         data: list
 
+    class Data(NamedTuple):
+        illuminance: int
+        delta: int
+        percent: int
+
+    class DataResponse(NamedTuple):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 5.1: Reading the Measured Values
+        """
+        receptor_head: bytes
+        command: IntEnum
+        hold: IntEnum
+        err: tuple
+        range: IntEnum
+        battery_level: IntEnum
+        data: NamedTuple  # This should be a Data NamedTuple
+
+    class ClearIntegratedDataResponse(NamedTuple):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 5.1: Reading the Measured Values
+        """
+        receptor_head: bytes
+        command: IntEnum
+        err: tuple
+
     class HOLD(IntEnum):
         """
         https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
@@ -233,11 +260,12 @@ class T10A(object):
                 "receptor_head must be a numeric ID of the"
                 " receptor head connected to T10A")
 
-        if value != 99 or value < 0 or value > 29:
-            raise ValueError(
-                "receptor_head must be a numeric ID between 0 and 29")
+        if (value == 99 or (value >= 0 and value <= 29)):
+            self._rcp_head = value
+            return
 
-        self._rcp_head = value
+        raise ValueError(
+            "receptor_head must be a numeric ID between 0 and 29")
 
     @receptor_head.deleter
     def receptor_head(self):
@@ -372,7 +400,7 @@ class T10A(object):
             status=status,
             data=data)
 
-    def _device_write(self, command, param):
+    def _device_write(self, command, param, expect_response=True):
         """
         The _device_write function sends a command and waits until a response
         is received. The response is parsed and its BCC is validated. If
@@ -418,6 +446,8 @@ class T10A(object):
         insert_to_bytearray(cmd, bcc, self.BCC_SHORT_OFFSET)
         insert_to_bytearray(cmd, self.DELIM, self.DELIM_SHORT_OFFSET)
         self.serial.write(cmd)
+        if not expect_response:
+            return None
         raw_response = self.serial.read(self._cmd_resp_length(command))
         resp = self._parse_response(raw_response, command)
         return resp
@@ -429,6 +459,7 @@ class T10A(object):
         # HOLD can be returned with many different values
 
         class HOLD_STATUS(IntEnum):
+            RUN_0 = 0
             HOLD_1 = 1
             RUN_2 = 2
             HOLD_3 = 3
@@ -436,7 +467,6 @@ class T10A(object):
             HOLD_5 = 5
             RUN_6 = 6
             HOLD_7 = 7
-            RUN_8 = 8
 
         try:
             h = HOLD_STATUS(int(hold))
@@ -497,36 +527,46 @@ class T10A(object):
             eprint("Could not parse BATTERY_LEVEL in response\n")
             raise e
 
-    def connect(self):
-        """
-        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
-        Section 1: Foreword
+    @staticmethod
+    def _parse_data_block(datablock):
+        decoded_data = datablock.decode('ascii')
+        if decoded_data.strip() == '':
+            return None
 
-        Prior to start of data communication with T-10, send command 54 to
-        switch the connection mode to PC connection mode.Unless PC connection
-        mode is established, communication with T-10 will be impossible. When
-        carrying out an operation,the corresponding command must also be sent
-        in accordance with the specified procedure.
-        """
-        cmd = self.CMD.SET_PC_CONNECTION_MODE
-        params = b'1' + 3*self.SPACE
-        resp = self._device_write(cmd, params)
-        return resp
+        sign = decoded_data[0]
+        value = int(decoded_data[1:5])
+        exp = int(decoded_data[5])
 
-    class RMD_Response(NamedTuple):  # pylint: disable=too-few-public-methods
-        """
-        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
-        Section 5.1: Reading the Measured Values
-        """
-        receptor_head: bytes
-        command: IntEnum
-        hold: IntEnum
-        err: tuple
-        range: IntEnum
-        battery_level: IntEnum
-        data: list
+        def get_exp():
+            exp_val = 0
+            if exp == 0:
+                exp_val = 10**-4
+            elif exp == 1:
+                exp_val = 10**-3
+            elif exp == 2:
+                exp_val = 10**-2
+            elif exp == 3:
+                exp_val = 10**-1
+            elif exp == 4:
+                exp_val = 10**0
+            elif exp == 5:
+                exp_val = 10**1
+            elif exp == 6:
+                exp_val = 10**2
+            elif exp == 7:
+                exp_val = 10**3
+            elif exp == 8:
+                exp_val = 10**4
+            elif exp == 9:
+                exp_val = 10**5
+            return exp_val
 
-    def read_measurement_data(self, hold, ccf, rng, silent=False):
+        if sign == '-':
+            return -value*get_exp()
+        return value*get_exp()
+
+    # pylint: disable-msg=too-many-arguments
+    def _cmd_with_long_fmt_resp(self, cmd, hold, ccf, rng, silent):
         """
         https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
         Section 1: Foreword
@@ -535,11 +575,18 @@ class T10A(object):
         measurements
         ...
         ...
-        A wait time is required for range switching.Since the saved data will
+        A wait time is required for range switching. Since the saved data will
         not be updated while the T-10 is switching the measuring range, the
         same data may be outputagain when a data request command is sent. In
         this case, a certain wait time must be provided between data request
         commands.
+
+        # Interpreting the results:
+        The reference used for Delta illuminance and percent is the reference
+        illuminance set on the T-10A, and must be set beforehand. If no
+        reference illuminance is set, the values for Delta illuminance and
+        percent will be spaces. If we see only a 'space' value we return None
+        by this function.
         """
         if not isinstance(hold, self.HOLD):
             raise ValueError(
@@ -575,10 +622,14 @@ class T10A(object):
                     time.sleep(0.6)
                 resp = self._device_write(cmd, params)
                 received_range = self._parse_range_from_status(resp.status)
+                # If the requested range has been set to auto, return
+                # immediately as the received_range will always be different
+                # than the requested one.
+                if requested_range == self.RANGE.AUTO:
+                    return resp, received_range
                 count += 1
             return resp, received_range
 
-        cmd = self.CMD.READ_MEASUREMENT_DATA
         params = (self._get_bytes_from_int_enum(hold) +
                   self._get_bytes_from_int_enum(ccf) +
                   self._get_bytes_from_int_enum(rng) +
@@ -587,29 +638,158 @@ class T10A(object):
         resp, received_range = get_measurement_with_retries(
             cmd, params, rng, 10)
 
-        rmd_response = self.RMD_Response(
+        data = self.Data(
+            illuminance=self._parse_data_block(resp.data[0]),
+            delta=self._parse_data_block(resp.data[1]),
+            percent=self._parse_data_block(resp.data[2]))
+
+        rmd_response = self.DataResponse(
             receptor_head=resp.receptor_head,
             command=resp.command,
             hold=self._parse_hold_from_status(resp.status),
             err=self._parse_err_from_status(resp.status),
             range=received_range,
             battery_level=self._parse_battery_level_from_status(resp.status),
-            data=resp.data[:])
-        # illuminance_data = resp.data[0]
-        # delta_value = resp.data[1]
-        # percent_value = resp.data[2]
+            data=data)
 
         return rmd_response
+
+    def read_measurement_data(self, hold, ccf, rng, silent=False):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 5.1
+        """
+        cmd = self.CMD.READ_MEASUREMENT_DATA
+        return self._cmd_with_long_fmt_resp(cmd, hold, ccf, rng, silent)
+
+    def read_integrated_data(self, hold, ccf, rng, silent=False):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 5.2
+        """
+        cmd = self.CMD.READ_INTEGRATED_DATA
+        return self._cmd_with_long_fmt_resp(cmd, hold, ccf, rng, silent)
+
+    def clear_integrated_data(self):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 5.3
+        """
+        cmd = self.CMD.CLEAR_INTEGRATED_DATA
+        params = 4*self.SPACE
+        resp = self._device_write(cmd, params)
+        err = self._parse_err_from_status(resp.status)
+        return self.ClearIntegratedDataResponse(
+            receptor_head=resp.receptor_head,
+            command=resp.command,
+            err=err)
+
+    def connect(self):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 5.4
+
+        Connect must be the first command we send to the instrument before
+        it accepts further commands. According to section 1 of the
+        communication manual:
+
+        Prior to start of data communication with T-10, send command 54 to
+        switch the connection mode to PC connection mode.Unless PC connection
+        mode is established, communication with T-10 will be impossible. When
+        carrying out an operation,the corresponding command must also be sent
+        in accordance with the specified procedure.
+        """
+        cmd = self.CMD.SET_PC_CONNECTION_MODE
+        params = b'1' + 3*self.SPACE
+        resp = self._device_write(cmd, params)
+        return resp
+
+    def set_hold_status(self, hold):
+        """
+        https://www.konicaminolta.com.cn/instruments/download/manual/pdf/T-10-E.pdf
+        Section 5.5
+        """
+        if self.receptor_head != b'99':
+            raise ValueError(
+                "SET_HOLD_STATUS require the receptor head value to be set"
+                " 99. Current value {}".format(self.receptor_head))
+
+        if not isinstance(hold, self.HOLD):
+            raise ValueError(
+                "Unknown HOLD value {}. Expected {} value type".format(
+                    hold, self.HOLD))
+
+        cmd = self.CMD.SET_HOLD_STATUS
+        params = (self._get_bytes_from_int_enum(hold) +
+                  self.SPACE + self.SPACE + b'0')
+        self._device_write(cmd, params, False)
+        # According to the manual we have to Wait at least 500ms after
+        # receiving the command response before sending further commands.
+        time.sleep(0.5)
+
+
+def is_error(t10a_err):
+    err, _ = t10a_err
+    if (err == T10A.ERROR.NORMAL_OPERATION_1 or
+            err == T10A.ERROR.NORMAL_OPERATION_2):
+        return False
+    return True
+
+
+def pretty_measurement_print(resp):
+    print("Receptor HEAD ID:", resp.receptor_head.decode())
+    print("Response for command:", resp.command)
+    print("Hold value:", resp.hold)
+    print("Range value:", resp.range)
+    print("Data:")
+    print("  Illuminance:", resp.data.illuminance)
+    print("  Delta:", resp.data.delta)
+    print("  Percent:", resp.data.percent)
+    if is_error(resp.err):
+        _, err_msg = resp.err
+        print("Error: ", err_msg)
+    print()
 
 
 def main():
     with T10A(port='/dev/ttyUSB0') as t10a:
+        # Should always be the first command
         t10a.connect()
+
+        # Read some measurment data from the default receptor
+        # head with ID 0
         resp = t10a.read_measurement_data(
             T10A.HOLD.RUN,
             T10A.CCF.DISABLED,
             T10A.RANGE.RANGE_5)
-        print(resp)
+        pretty_measurement_print(resp)
+
+        # Read the integrated data
+        resp = t10a.read_integrated_data(
+            T10A.HOLD.RUN,
+            T10A.CCF.DISABLED,
+            T10A.RANGE.RANGE_5)
+        pretty_measurement_print(resp)
+
+        # Clear the integrated data. No response from this command
+        resp = t10a.clear_integrated_data()
+        if is_error(resp.err):
+            print(resp)
+
+        # The set_hold_status_command requires the receptor_head to be
+        # set to 99 first.
+        t10a.receptor_head = 99
+        # Note the this command doesn't return a response.
+        t10a.set_hold_status(T10A.HOLD.RUN)
+
+        # Set the receptor_head back to 0 and read more measurements
+        # from receptor 0
+        t10a.receptor_head = 0
+        resp = t10a.read_measurement_data(
+            T10A.HOLD.RUN,
+            T10A.CCF.DISABLED,
+            T10A.RANGE.AUTO)
+        pretty_measurement_print(resp)
 
 
 if __name__ == "__main__":
