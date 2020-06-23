@@ -520,7 +520,7 @@ class T10A(object):
         try:
             b = BATTERY_LEVEL_STATUS(int(battery_level))
             if (b == BATTERY_LEVEL_STATUS.NORMAL_0 or
-                    b == BATTERY_LEVEL_STATUS.NORMAL_1):
+                    b == BATTERY_LEVEL_STATUS.NORMAL_2):
                 return self.BATTERY_LEVEL.NORMAL
             return self.BATTERY_LEVEL.LOW
         except ValueError as e:
